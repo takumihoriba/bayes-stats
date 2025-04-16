@@ -1,0 +1,214 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r}
+library(readr)
+library(dplyr)
+
+library(caret)
+library(recipes)
+
+library(caret) 
+library(glmnet)
+library(ggplot2) 
+library(tidyr) 
+library(patchwork)
+
+
+set.seed(123) 
+
+# --- Load Ames Data ---
+ames_data_raw <- read_csv("C:/2024winter/stat 447/project/archive/AmesHousing.csv", show_col_types = FALSE)
+cat("Raw Ames data dimensions:", dim(ames_data_raw), "\n")
+```
+
+
+
+```{r}
+# --- Process Ames Data ---
+
+# Separate Target & Initial EDA
+target_ames <- ames_data_raw$SalePrice
+predictors_ames_raw <- ames_data_raw %>% select(-SalePrice)
+
+
+# EDA: Check SalePrice distribution
+p_hist_ames_raw <- ggplot(data.frame(SalePrice = target_ames), aes(x = SalePrice)) +
+  geom_histogram(bins = 50, fill = "skyblue", color = "black") +
+  ggtitle("Distribution of SalePrice (Ames) - Raw") +
+  theme_minimal()
+
+
+p_hist_ames_log <- ggplot(data.frame(LogSalePrice = log(target_ames)), aes(x = LogSalePrice)) +
+  geom_histogram(bins = 50, fill = "lightgreen", color = "black") +
+  ggtitle("Distribution of log(SalePrice) (Ames)") +
+  theme_minimal()
+
+print(p_hist_ames_raw + p_hist_ames_log)
+cat("\nSalePrice in Ames data is right-skewed. Using log(SalePrice) as the target.\n")
+y_vector_ames_log <- log(target_ames) 
+
+```
+
+
+
+```{r}
+# Clean Predictors
+# Remove Identifier Columns
+cols_to_remove_ids <- intersect(c("Order", "PID"), colnames(predictors_ames_raw))
+if (length(cols_to_remove_ids) > 0) {
+  predictors_ames_cleaned <- predictors_ames_raw %>% select(-all_of(cols_to_remove_ids))
+  cat("Removed identifier columns:", paste(cols_to_remove_ids, collapse=", "), "\n")
+} else {
+  predictors_ames_cleaned <- predictors_ames_raw
+}
+
+# Remove columns with high missingness here we remove cols with over 50% of missingness
+missing_summary_ames <- sapply(predictors_ames_cleaned, function(x) sum(is.na(x)) / nrow(predictors_ames_cleaned))
+high_missing_cols_ames <- names(missing_summary_ames[missing_summary_ames > 0.50])
+if (length(high_missing_cols_ames) > 0) {
+  predictors_ames_cleaned <- predictors_ames_cleaned %>% select(-all_of(high_missing_cols_ames))
+  cat("Removed columns with >50% missing values:", paste(high_missing_cols_ames, collapse=", "), "\n")
+}
+
+
+# Remove Near-Zero Variance Predictors
+nzv_check_ames <- nearZeroVar(predictors_ames_cleaned, saveMetrics = TRUE)
+nzv_cols_ames <- rownames(nzv_check_ames[nzv_check_ames$nzv, ])
+if (length(nzv_cols_ames) > 0) {
+  predictors_ames_cleaned <- predictors_ames_cleaned %>% select(-all_of(nzv_cols_ames))
+  cat("Removed near-zero variance columns:", paste(nzv_cols_ames, collapse=", "), "\n")
+}
+cat("Dimensions after initial cleaning (Ames):", dim(predictors_ames_cleaned), "\n")
+
+
+# Preprocessing with Recipes
+preproc_recipe_ames <- recipe(y_vector_ames_log ~ ., data = data.frame(y_vector_ames_log, predictors_ames_cleaned)) %>%
+  step_impute_median(all_numeric_predictors()) %>%
+  step_impute_mode(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_zv(all_predictors()) %>% # 
+  step_normalize(all_numeric_predictors()) # Center and scale
+
+# Prepare and bake the recipe
+preproc_data_prep_ames <- prep(preproc_recipe_ames) 
+processed_data_ames <- bake(preproc_data_prep_ames, new_data = NULL)
+
+# Separate processed predictors (X) and target (y)
+X_matrix_ames <- as.matrix(processed_data_ames %>% select(-y_vector_ames_log))
+
+
+cat("Dimensions of processed predictor matrix (Ames) before LASSO selection:", dim(X_matrix_ames), "\n")
+
+```
+
+
+```{r}
+#LASSO Feature Selection
+cv_lasso_ames <- cv.glmnet(X_matrix_ames, y_vector_ames_log,
+                           alpha = 1, # LASSO
+                           family = "gaussian")
+
+# Plot LASSO CV results
+plot(cv_lasso_ames)
+title("LASSO Cross-Validation (Ames Feature Selection)", line = 2.5)
+
+lambda_1se_ames <- cv_lasso_ames$lambda.1se
+cat("Optimal lambda (1se) for Ames LASSO selection:", lambda_1se_ames, "\n")
+
+# Get coefficients at lambda.1se
+lasso_coeffs_ames <- coef(cv_lasso_ames, s = lambda_1se_ames)
+
+# Identify non-zero coefficients (excluding the intercept)
+selected_lasso_indices_ames <- which(lasso_coeffs_ames[-1, 1] != 0)
+selected_ames_features <- rownames(lasso_coeffs_ames)[-1][selected_lasso_indices_ames]
+
+cat("Number of features selected by LASSO (Ames):", length(selected_ames_features), "\n")
+
+#Final Ames Predictor Matrix
+X_ames_lasso <- X_matrix_ames[, selected_ames_features, drop = FALSE]
+cat("Dimensions of final predictor matrix after LASSO selection (Ames):", dim(X_ames_lasso), "\n")
+
+
+
+```
+
+
+```{r}
+# --- Fit Frequentist Models  ---
+cat("\n--- Fitting Frequentist Models with LASSO Selected Features) ---\n")
+
+
+ames_data_final <- data.frame(y = y_vector_ames_log, X_ames_lasso)
+
+#  OLS
+ols_ames <- lm(y ~ ., data = ames_data_final)
+cat("\nOLS Model Summary (Ames):\n")
+print(summary(ols_ames))
+
+#  Ridge Regression
+# Use cv.glmnet on the LASSO-selected features
+cv_ridge_ames <- cv.glmnet(X_ames_lasso, y_vector_ames_log,
+                           alpha = 0, # Ridge
+                           family = "gaussian")
+plot(cv_ridge_ames)
+title("Ridge Cross-Validation (Ames - on LASSO features)", line = 2.5)
+lambda_ridge_ames <- cv_ridge_ames$lambda.min # Often use lambda.min for Ridge
+cat("\nRidge Optimal Lambda (min) (Ames):", lambda_ridge_ames, "\n")
+
+
+# LASSO Regression (alpha=1)
+# We already did this for feature selection. We can extract the final model info
+cv_lasso_final_ames <- cv.glmnet(X_ames_lasso, y_vector_ames_log,
+                                 alpha = 1, # LASSO
+                                 family = "gaussian")
+plot(cv_lasso_final_ames)
+title("LASSO Cross-Validation (Ames - on LASSO features)", line = 2.5)
+lambda_lasso_ames <- cv_lasso_final_ames$lambda.1se
+cat("\nLASSO Optimal Lambda (1se) (Ames):", lambda_lasso_ames, "\n")
+cat("Number of non-zero coefficients in final LASSO model (Ames):", cv_lasso_final_ames$nzero[which(cv_lasso_final_ames$lambda == lambda_lasso_ames)], "\n")
+```
+
+
+
+
+
+
+```{r}
+
+
+```
+
+
+```{r}
+
+
+```
+
+
+```{r}
+
+
+```
+
+
+```{r}
+
+
+```
+
+
+
+```{r}
+
+
+```
+
+
