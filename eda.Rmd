@@ -1,0 +1,13 @@
+---
+title: "eda"
+output: html_document
+---
+
+```{r}
+install.packages("AmesHousing")
+library(AmesHousing)
+```
+
+```{r}
+data(ames_raw)
+```
