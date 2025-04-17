@@ -77,4 +77,54 @@ abline(h = 0, col = "red")
 
 ```
 
-# 
+# Multiple regression
+```{r}
+vars <- c("Sale_Price", "Lot_Area", "Overall_Qual", "Year_Built", "Neighborhood", "Bldg_Type")
+ames_small <- ames_df2[, vars]
+ames_small <- na.omit(ames_small)
+
+
+X <- model.matrix(Sale_Price ~ . - 1, data = ames_small)
+# colnames(X)
+
+# X <- scale(X)
+
+y <- ames_small$Sale_Price
+x_pred <- X[1, ]
+
+data_list <- list(
+  N = nrow(X),
+  K = ncol(X),
+  X = X,
+  y = y,
+  x_pred = x_pred
+)
+
+```
+
+```{r}
+fit <- stan(
+  file = "multivar_bayes.stan",
+  data = data_list,
+  iter = 2000,
+  chains = 4,
+  seed = 447
+)
+```
+
+```{r}
+traceplot(fit)
+
+```
+
+```{r}
+summary(fit)$summary
+
+```
+
+```{r}
+posterior_y <- extract(fit)$y_pred
+hist(posterior_y, main = "Posterior Predictive Distribution", xlab = "Predicted y")
+abline(v = mean(posterior_y), col = "red")
+
+```
