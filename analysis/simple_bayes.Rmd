@@ -12,7 +12,6 @@ suppressPackageStartupMessages(require(ggplot2))
 suppressPackageStartupMessages(require(dplyr))
 suppressPackageStartupMessages(require(bayesplot))
 
-install.packages("AmesHousing")
 library(AmesHousing)
 
 ```
@@ -126,5 +125,96 @@ summary(fit)$summary
 posterior_y <- extract(fit)$y_pred
 hist(posterior_y, main = "Posterior Predictive Distribution", xlab = "Predicted y")
 abline(v = mean(posterior_y), col = "red")
+
+```
+
+
+# Hiearchical model
+```{r}
+
+ames_small$neigh_id <- as.integer(factor(ames_small$Neighborhood))
+G <- length(unique(ames_small$neigh_id))
+
+X <- model.matrix(Sale_Price ~ . - Neighborhood - 1, data = ames_small)
+X <- scale(X)
+
+y <- ames_small$Sale_Price
+x_pred <- X[1, ]
+
+data_list <- list(
+  N = nrow(X),
+  K = ncol(X),
+  X = X,
+  y = y,
+  G = G,
+  gid = ames_small$neigh_id,
+  x_pred = x_pred
+)
+
+
+fit <- stan(
+  file = "hier_neigh_model.stan",
+  data = data_list,
+  iter = 1000,
+  chains = 4,
+  seed = 447
+)
+
+```
+
+With all features
+```{r}
+
+ames_df2_na = na.omit(ames_df2)
+ames_df2_na$neigh_id <- as.integer(factor(ames_df2_na$Neighborhood))
+G <- length(unique(ames_df2_na$neigh_id))
+
+X <- model.matrix(Sale_Price ~ . - Neighborhood - 1, data = ames_df2_na)
+X <- scale(X)
+
+y <- ames_df2_na$Sale_Price
+x_pred <- X[1, ]
+
+data_list2 <- list(
+  N = nrow(X),
+  K = ncol(X),
+  X = X,
+  y = y,
+  G = G,
+  gid = ames_df2_na$neigh_id,
+  x_pred = x_pred
+)
+
+
+fit <- stan(
+  file = "hier_neigh_model.stan",
+  data = data_list2,
+  iter = 1000,
+  chains = 4,
+  seed = 447
+)
+```
+
+
+```{r}
+traceplot(fit)
+```
+
+```{r}
+summary(fit)$summary
+```
+
+## Justification for hiearchical model
+Sale price is different based on neighborhood
+```{r}
+ggplot(ames_df2, aes(x = Neighborhood, y = Sale_Price)) +
+  geom_boxplot() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Sale Price by Neighborhood")
+```
+
+```{}
+library(leaps)
+regfit_full <- regsubsets(Sale_Price ~ ., data = ames_df2_na, nvmax = 10, method = "exhaustive", really.big = T)
 
 ```

@@ -1,0 +1,218 @@
+---
+title: "hier_bayes"
+output: html_document
+---
+
+```{r include=F}
+library(extraDistr)
+library(distr)
+library(ggplot2)
+library(rstan)
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(bayesplot))
+suppressPackageStartupMessages(require(tidybayes))
+library(AmesHousing)
+
+```
+
+Data
+```{r}
+ames_df2 = make_ordinal_ames()
+vars <- c("Sale_Price", "Lot_Area", "Overall_Qual", "Year_Built", "Neighborhood")
+ames_small <- ames_df2[, vars]
+ames_small <- na.omit(ames_small)
+
+
+```
+
+```{r}
+ames_small |> group_by(Neighborhood) |>
+  summarise(count = n(),
+            avg_sale_price = mean(Sale_Price)) |>
+  mutate(percent = count / sum(count) * 100)
+```
+
+```{r}
+
+ames_small$neigh_id <- as.integer(factor(ames_small$Neighborhood))
+
+# ames_small <- ames_small %>%
+#   mutate(Sale_Price = log(Sale_Price))
+
+
+G <- length(unique(ames_small$neigh_id))
+
+X <- model.matrix(Sale_Price ~ . - Neighborhood - 1, data = ames_small)
+X <- scale(X)
+
+y <- ames_small$Sale_Price
+x_pred <- X[1, ]
+
+data_list <- list(
+  N = nrow(X),
+  K = ncol(X),
+  X = X,
+  y = y,
+  G = G,
+  gid = ames_small$neigh_id,
+  x_pred = x_pred
+)
+
+
+fit <- stan(
+  file = "hier_neigh_model.stan",
+  data = data_list,
+  iter = 1000,
+  chains = 4,
+  seed = 447
+)
+
+```
+
+Posterior predictive
+
+```{r}
+y_rep <- rstan::extract(fit, "y_rep")$y_rep
+ppc_dens_overlay(y = ames_small$Sale_Price, yrep = y_rep[1:100, ])
+
+```
+
+
+LOO callibration
+
+```{r}
+ci_limits <- matrix(NA, nrow = N_obs, ncol = 2)
+y_preds <- numeric(N_obs)
+
+for (i_test in 1:N_obs) {
+  # Training data: remove i-th observation
+  X_train <- X[-i_test, , drop = FALSE]
+  y_train <- y[-i_test]
+  gid_train <- gid[-i_test]  # group/neighborhood index
+  G_train <- length(unique(gid_train))  # might stay the same
+
+  # Group ID remapping (optional for safety)
+  gid_map <- as.integer(factor(gid_train))
+  gid_pred <- gid[i_test]  # keep as-is, or set to some constant if not in training
+
+  # Test data row as row_vector (required by Stan)
+  x_pred_row <- matrix(X[i_test, ], nrow = 1)
+
+  stan_input <- list(
+    N = nrow(X_train),
+    K = ncol(X_train),
+    X = X_train,
+    y = y_train,
+    G = G_train,
+    gid = gid_map,
+    x_pred = x_pred_row
+  )
+
+  fit_loo <- rstan::sampling(
+    stan_model,  # your compiled model
+    data = stan_input,
+    chains = 1, iter = 1000, refresh = 0
+  )
+
+  pred_samples <- rstan::extract(fit_loo, "y_pred")$y_pred
+  ci_limits[i_test, ] <- quantile(pred_samples, probs = c(0.025, 0.975))
+  y_preds[i_test] <- mean(pred_samples)
+}
+
+```
+
+
+```{r}
+
+hier_model = stan_model("hier_neigh_model.stan")
+
+
+ames_small$neigh_id <- as.integer(factor(ames_small$Neighborhood))
+G <- length(unique(ames_small$neigh_id))
+y <- ames_small$Sale_Price
+x_pred <- X[1, ]
+
+
+N_obs = nrow(X)
+
+ci_limits = matrix(0, nrow=N_obs, 2)
+ci_level = 0.8
+ci_plims = c((1-ci_level)/2, (1+ci_level)/2) 
+
+for(i_test in 1:10) {
+   train_test_data= list(
+     N = N_obs - 1,
+     K = ncol(X),
+     X = X[-i_test, ],
+     y = y[-i_test],
+     G = G,
+     gid = (ames_small$neigh_id)[-i_test],
+     x_pred = X[i_test,],
+     group_pred = (ames_small$neigh_id)[i_test]
+   )
+   
+   mcmc_res = sampling(
+    object = hier_model,
+    data = train_test_data,
+    iter = 1000,
+    chains = 1
+    )
+   
+   samples= extract(mcmc_res)
+   ci_limits[i_test,]= quantile(samples$y_pred,ci_plims)
+}
+
+# data_list <- list(
+#   N = nrow(X),
+#   K = ncol(X),
+#   X = X,
+#   y = y,
+#   G = G,
+#   gid = ames_small$neigh_id,
+#   x_pred = x_pred
+# )
+# 
+# 
+# fit <- stan(
+#   file = "hier_neigh_model.stan",
+#   data = data_list,
+#   iter = 1000,
+#   chains = 4,
+#   seed = 447
+# )
+```
+
+
+
+
+```{r}
+# left-out values
+
+```
+MCMC diagnostics
+Summary
+```{r}
+summary(fit)$summary
+```
+
+
+
+Trace plot
+```{r}
+traceplot(fit)
+```
+
+```{r}
+mcmc_trace(fit) + theme_minimal()
+
+```
+Rank plot
+
+```{r}
+mcmc_rank_hist(fit) + theme_minimal()
+
+```
+
+
+

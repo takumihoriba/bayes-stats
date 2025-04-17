@@ -5,15 +5,16 @@ data {
   vector[N] y;                     // Outcome variable
   int<lower=1> G;                  // Number of neighborhoods
   int<lower=1, upper=G> gid[N];    // Neighborhood ID for each obs
-  row_vector[K] x_pred;           // New observation for prediction
+  row_vector[K] x_pred; 
+  int<lower=1, upper=G> group_pred;
 }
 
 parameters {
-  vector[K] beta;                 // Coefficients for predictors
-  real mu_alpha;                 // Hyper mean for intercepts
-  real<lower=0> sigma;           // Observation noise
-  real<lower=0> sigma_alpha;     // Variation between neighborhoods
-  vector[G] alpha;               // Varying intercepts for neighborhoods
+  vector[K] beta;
+  real mu_alpha;
+  real<lower=0> sigma;    
+  real<lower=0> sigma_alpha;
+  vector[G] alpha;
 }
 
 model {
@@ -30,5 +31,9 @@ model {
 
 generated quantities {
   real y_pred;
-  y_pred = normal_rng(alpha[gid[1]] + x_pred * beta, sigma);
+  vector[N] y_rep;
+  y_pred = normal_rng(alpha[group_pred] + x_pred * beta, sigma);
+  for (i in 1:N) {
+    y_rep[i] = normal_rng(alpha[gid[i]] + X[i] * beta, sigma);
+  }
 }
