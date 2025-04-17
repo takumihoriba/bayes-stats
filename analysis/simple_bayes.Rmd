@@ -1,0 +1,80 @@
+---
+title: "simple_bayes"
+output: html_document
+---
+
+```{r include=F}
+library(extraDistr)
+library(distr)
+library(ggplot2)
+library(rstan)
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(bayesplot))
+
+install.packages("AmesHousing")
+library(AmesHousing)
+
+```
+
+
+# Simple linear regression
+```{r}
+ames_df2 = make_ordinal_ames()
+
+y = ames_df2$Sale_Price
+x = ames_df2$Lot_Area
+
+data_list <- list(
+  N = length(x),
+  xs = x,
+  ys = y,
+  x_pred = 5000
+)
+
+```
+
+```{r}
+
+
+
+fit <- stan(
+  file = "simple_bayes.stan", 
+  data = data_list, 
+  iter = 2000, 
+  chains = 4,
+  seed = 447
+)
+
+
+
+```
+
+
+
+```{r}
+traceplot(fit, pars = c("slope", "sigma"))
+summary(fit)$summary
+
+```
+
+```{r}
+posterior_y <- extract(fit)$y_pred
+hist(posterior_y, main = "Posterior Predictive Distribution", xlab = "Predicted y")
+abline(v = mean(posterior_y), col = "red")
+
+```
+
+```{r}
+posterior <- extract(fit)
+slope_post_mean <- mean(posterior$slope)
+fitted_vals <- slope_post_mean * x
+residuals <- y - fitted_vals
+
+
+plot(fitted_vals, residuals, main = "Residuals vs Fitted", xlab = "Fitted", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+```
+
+# 
