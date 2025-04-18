@@ -1,0 +1,313 @@
+---
+title: "hier_bayes"
+output: html_document
+---
+
+```{r include=F}
+library(extraDistr)
+library(distr)
+library(ggplot2)
+library(rstan)
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(bayesplot))
+suppressPackageStartupMessages(require(tidybayes))
+library(AmesHousing)
+
+```
+
+
+
+Preliminary analysis on which variables are promising.
+```{r}
+
+library(grpreg)
+
+ames_df3 = make_ordinal_ames()
+
+ames_df3 = ames_df3 %>%
+  mutate(Sale_Price = log(Sale_Price))
+
+ames_df3 = ames_df3 %>%
+  mutate(across(where(is.numeric), scale))
+
+ames_df3 <- na.omit(ames_df3)
+
+X_lasso <- model.matrix(Sale_Price ~ . - 1, data = ames_df3)
+y_lasso <- ames_df3$Sale_Price
+
+
+terms_obj <- terms(Sale_Price ~ ., data = ames_df3)
+var_names <- attr(terms_obj, "term.labels")
+col_to_group <- attr(X_lasso, "assign")
+group_labels <- factor(var_names[col_to_group])
+
+fit_group <- cv.grpreg(X_lasso, y_lasso, group = as.numeric(group_labels), penalty = "grLasso")
+
+coef_group <- coef(fit_group, lambda = fit_group$lambda.min)
+selected_vars <- var_names[unique(col_to_group[which(coef_group != 0)])]
+selected_vars
+
+
+```
+
+```{r}
+coef_vals <- coef_group[coef_group != 0]
+coef_vals <- coef_vals[-1]
+abs_coef_vals <- abs(coef_vals)
+
+sort(abs_coef_vals, decreasing = TRUE)
+
+```
+
+Data
+The average sales price for each neighborhood can be significantly different. Some groups are smaller than the others, but partial pooling could help within bayesian framework.
+```{r}
+ames_df2 = make_ordinal_ames()
+
+set.seed(447)
+test_indices <- sample(nrow(ames_df2), size = 0.85 * nrow(ames_df2))
+ames_valid <- ames_df2[test_indices, ]
+ames_train <- ames_df2[-test_indices, ] 
+
+
+vars <- c("Sale_Price", "Garage_Area", "Gr_Liv_Area", "Year_Built", "Total_Bsmt_SF", "Neighborhood")
+ames_small <- ames_train[, vars]
+ames_small <- na.omit(ames_small)
+```
+
+Small EDA
+```{r}
+ames_small |> group_by(Neighborhood) |>
+  summarise(count = n(),
+            avg_sale_price = mean(Sale_Price)) |>
+  mutate(percent = count / sum(count) * 100)
+```
+
+```{r}
+
+
+# use full data
+# ames_small = na.omit(ames_df2)
+
+ames_small$neigh_id <- as.integer(factor(ames_small$Neighborhood))
+
+# take log of sales price.
+ames_small <- ames_small %>%
+  mutate(Sale_Price = log(Sale_Price))
+
+G <- length(unique(ames_small$neigh_id))
+
+X <- model.matrix(Sale_Price ~ . - Neighborhood - 1, data = ames_small)
+X <- scale(X)
+
+y <- ames_small$Sale_Price
+x_pred <- X[1, ]
+
+data_list <- list(
+  N = nrow(X),
+  K = ncol(X),
+  X = X,
+  y = y,
+  G = G,
+  gid = ames_small$neigh_id,
+  x_pred = x_pred,
+  group_pred = 1
+)
+
+
+hier_model = stan_model("hier_neigh_model.stan")
+
+fit = sampling(
+  object = hier_model,
+  data = data_list,
+  iter = 1000,
+  chains = 4,
+  seed = 447
+)
+
+```
+
+Posterior predictive
+
+```{r}
+y_rep <- rstan::extract(fit, "y_rep")$y_rep
+ppc_dens_overlay(y = ames_small$Sale_Price, yrep = y_rep[1:100, ])
+
+```
+
+
+```{r}
+posterior_y <- extract(fit)$y_pred
+hist(posterior_y, main = "Posterior Predictive Distribution", xlab = "Predicted y")
+abline(v = mean(posterior_y), col = "red")
+
+```
+
+
+MCMC diagnostics
+Summary
+```{r}
+head(summary(fit)$summary, 35)
+```
+
+```{r}
+alpha_summary <- summary(fit, pars = "alpha")$summary
+alpha_mean <- alpha_summary[, "mean"]
+alpha_sd <- alpha_summary[, "sd"]
+
+group_sizes_table <- table(ames_small$neigh_id)
+group_ids <- as.integer(names(group_sizes_table))
+group_sizes <- as.numeric(group_sizes_table)
+
+plot(group_sizes, alpha_mean,
+     xlab = "Group size (per neighborhood)", 
+     ylab = "Posterior mean of alpha_g",
+     main = "Shrinkage Behavior with Uncertainty",
+     pch = 19, ylim = range(alpha_mean - alpha_sd, alpha_mean + alpha_sd))
+
+arrows(group_sizes, alpha_mean - alpha_sd,
+       group_sizes, alpha_mean + alpha_sd,
+       angle = 90, code = 3, length = 0.05, col = "gray40")
+
+mu_alpha_mean <- summary(fit, pars = "mu_alpha")$summary[,"mean"]
+abline(h = mu_alpha_mean, col = "red", lty = 2)
+
+legend("topright", legend = expression(mu[alpha]), 
+       col = "red", lty = 2, bty = "n")
+
+
+```
+
+Trace plot
+```{r}
+traceplot(fit)
+```
+
+```{r}
+mcmc_trace(fit, pars = c("beta[1]", "beta[2]", "beta[3]", "mu_alpha", "sigma", "alpha[1]")) + theme_minimal()
+
+```
+Rank plot
+
+```{r}
+mcmc_rank_hist(fit, pars = c("beta[1]", "beta[2]", "beta[3]", "mu_alpha", "sigma", "alpha[1]")) + theme_minimal()
+
+```
+
+
+Callibration
+
+LOOCV callibration
+
+```{r}
+
+hier_model = stan_model("hier_neigh_model.stan")
+
+
+ames_small$neigh_id <- as.integer(factor(ames_small$Neighborhood))
+G <- length(unique(ames_small$neigh_id))
+y <- ames_small$Sale_Price
+x_pred <- X[1, ]
+
+
+N_obs = nrow(X)
+
+set.seed(447)
+loo_indices <- sample(1:nrow(ames_small), size = 20)
+
+ci_limits = matrix(0, nrow=length(loo_indices), 2)
+ci_level = 0.8
+ci_plims = c((1-ci_level)/2, (1+ci_level)/2) 
+
+for(idx in 1:length(loo_indices)) {
+   i_test = loo_indices[idx]
+   train_test_data= list(
+     N = N_obs - 1,
+     K = ncol(X),
+     X = X[-i_test, ],
+     y = y[-i_test],
+     G = G,
+     gid = (ames_small$neigh_id)[-i_test],
+     x_pred = X[i_test,],
+     group_pred = (ames_small$neigh_id)[i_test]
+   )
+   
+   mcmc_res = sampling(
+    object = hier_model,
+    data = train_test_data,
+    iter = 1000,
+    chains = 1
+    )
+   
+   samples= extract(mcmc_res)
+   ci_limits[idx,]= quantile(samples$y_pred, ci_plims)
+}
+```
+
+
+
+
+```{r}
+
+df = data.frame(
+  y = y[loo_indices]
+)
+
+ci_limits = ci_limits[1:length(loo_indices), ]
+
+ merged_df = df %>%
+ bind_cols(data.frame(CI_L = ci_limits[,1], CI_R = ci_limits[,2])) %>%
+ mutate(Inside_CI = (y >= CI_L & y <= CI_R))
+ merged_df %>%
+ ggplot(aes(x = 1:length(loo_indices), y = y, ymin = CI_L, ymax = CI_R, color=Inside_CI)) +
+ geom_point() +
+ geom_errorbar() +
+ theme_minimal() +
+ labs(x = "Point", y = "Prediction", title = "Credible Intervals")
+
+```
+
+
+Synthetic data (not complete)
+```{r}
+set.seed(123)
+N_sim <- 200
+G_sim <- 5
+x_sim <- cbind(rnorm(N_sim), rnorm(N_sim))
+group_sim <- sample(1:G_sim, N_sim, replace = TRUE)
+alpha_true <- rnorm(G_sim, 10, 1)
+beta_true <- c(2.5, -1.0)
+y_sim <- as.vector(alpha_true[group_sim] + x_sim %*% beta_true + rnorm(N_sim, 0, 1))
+
+
+
+data_list <- list(
+  N = N_sim,
+  K = 2,
+  X = x_sim,
+  y = y_sim,
+  G = G_sim,
+  gid = group_sim,
+  x_pred = x_sim[1, ],
+  group_pred = group_sim[1]
+)
+
+
+fit_syn <- stan(
+  file = "hier_neigh_model.stan",
+  data = data_list,
+  iter = 1000,
+  chains = 4,
+  seed = 447
+)
+
+```
+
+```{r}
+head(summary(fit_syn)$summary, 11)
+mcmc_trace(as.array(fit_syn), pars = c("beta[1]", "beta[2]", "mu_alpha", "sigma", "sigma_alpha", "alpha[1]"))
+```
+
+
+

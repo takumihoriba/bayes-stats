@@ -1,0 +1,33 @@
+---
+title: "eda"
+output: html_document
+---
+
+```{r}
+install.packages("AmesHousing")
+library(AmesHousing)
+```
+
+```{r}
+data(ames_raw)
+
+ames_df = make_ames()
+
+# probably use this one
+ames_df2 = make_ordinal_ames()
+
+```
+
+EDA?
+
+```{r}
+install.packages("DataExplorer")
+library(DataExplorer)
+create_report(ames_df2)
+
+```
+
+
+```{r}
+
+```
