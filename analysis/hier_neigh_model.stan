@@ -20,9 +20,9 @@ parameters {
 model {
   // Priors
   beta ~ normal(0, 10);
-  mu_alpha ~ normal(0, 100);
-  sigma ~ exponential(0.001);
-  sigma_alpha ~ exponential(0.001);
+  mu_alpha ~ normal(0, 10);
+  sigma ~ exponential(0.01);
+  sigma_alpha ~ exponential(0.01);
   alpha ~ normal(mu_alpha, sigma_alpha);
 
   // Likelihood

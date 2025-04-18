@@ -18,5 +18,10 @@ model {
 }
 
 generated quantities {
-  real y_pred = normal_rng(x_pred * beta, sigma);
+  real y_pred = normal_rng(dot_product(x_pred, beta), sigma);
+  vector[N] y_rep;
+  for (i in 1:N) {
+    y_rep[i] = normal_rng(dot_product(row(X, i), beta), sigma);
+  }
+
 }
