@@ -19,12 +19,14 @@ library(glmnet)
 library(ggplot2) 
 library(tidyr) 
 library(patchwork)
+install.packages("here")
+library(here)
 
 
 set.seed(123) 
 
 # --- Load Ames Data ---
-ames_data_raw <- read_csv("C:/2024winter/stat 447/project/archive/AmesHousing.csv", show_col_types = FALSE)
+ames_data_raw <- read_csv("C:/2024winter/stat447/project/archive/AmesHousing.csv", show_col_types = FALSE)
 cat("Raw Ames data dimensions:", dim(ames_data_raw), "\n")
 ```
 
@@ -143,17 +145,17 @@ cat("Dimensions of final predictor matrix after LASSO selection (Ames):", dim(X_
 
 ```{r}
 # --- Fit Frequentist Models  ---
-cat("\n--- Fitting Frequentist Models with LASSO Selected Features) ---\n")
+cat("\n--- Fitting Frequentist Models - LASSO Selected Features) ---\n")
 
-
+# Combine data for lm
 ames_data_final <- data.frame(y = y_vector_ames_log, X_ames_lasso)
 
-#  OLS
+# 6a. OLS
 ols_ames <- lm(y ~ ., data = ames_data_final)
 cat("\nOLS Model Summary (Ames):\n")
 print(summary(ols_ames))
 
-#  Ridge Regression
+# 6b. Ridge Regression (alpha=0)
 # Use cv.glmnet on the LASSO-selected features
 cv_ridge_ames <- cv.glmnet(X_ames_lasso, y_vector_ames_log,
                            alpha = 0, # Ridge
@@ -162,10 +164,12 @@ plot(cv_ridge_ames)
 title("Ridge Cross-Validation (Ames - on LASSO features)", line = 2.5)
 lambda_ridge_ames <- cv_ridge_ames$lambda.min # Often use lambda.min for Ridge
 cat("\nRidge Optimal Lambda (min) (Ames):", lambda_ridge_ames, "\n")
+# Coefficients for the best Ridge model
+# print(coef(cv_ridge_ames, s = lambda_ridge_ames))
 
-
-# LASSO Regression (alpha=1)
-# We already did this for feature selection. We can extract the final model info
+# 6c. LASSO Regression (alpha=1)
+# We already did this for feature selection. We can extract the final model info.
+# Or re-run CV on the selected features (usually very fast)
 cv_lasso_final_ames <- cv.glmnet(X_ames_lasso, y_vector_ames_log,
                                  alpha = 1, # LASSO
                                  family = "gaussian")
@@ -174,6 +178,8 @@ title("LASSO Cross-Validation (Ames - on LASSO features)", line = 2.5)
 lambda_lasso_ames <- cv_lasso_final_ames$lambda.1se
 cat("\nLASSO Optimal Lambda (1se) (Ames):", lambda_lasso_ames, "\n")
 cat("Number of non-zero coefficients in final LASSO model (Ames):", cv_lasso_final_ames$nzero[which(cv_lasso_final_ames$lambda == lambda_lasso_ames)], "\n")
+# Coefficients for the best LASSO model
+# print(coef(cv_lasso_final_ames, s = lambda_lasso_ames))
 ```
 
 
@@ -181,28 +187,163 @@ cat("Number of non-zero coefficients in final LASSO model (Ames):", cv_lasso_fin
 
 
 
-```{r}
+
+```{r bayesian, eval=FALSE}
+
+cat("\n--- Preparing Data for Bayesian Model ---\n")
+if (!exists("predictors_ames_cleaned") || !"Neighborhood" %in% colnames(predictors_ames_cleaned)) {
+   stop("Need 'predictors_ames_cleaned' with 'Neighborhood' column from the full dataset.")
+}
+full_neighborhood_factor <- factor(predictors_ames_cleaned$Neighborhood)
+gid_full <- as.integer(full_neighborhood_factor)
+G_full <- length(levels(full_neighborhood_factor))
+cat("Number of unique neighborhoods (G) in full dataset:", G_full, "\n")
+cat("Successfully prepared Gid and G.\n")
+
+
+
+cat("\n--- Bayesian Model - Diagnostics & Subset Test ---\n")
+
+
+# --- DIAGNOSTICS ---
+cat("Current R Working Directory:", getwd(), "\n")
+cat("Project Root according to here():", here::here(), "\n")
+cat("Files in Project Root:", paste(list.files(here::here()), collapse="\n  "), "\n")
+cat("Files in Current Working Directory:", paste(list.files(getwd()), collapse="\n  "), "\n")
+
+#file path 
+stan_file_path <- here::here("hierarchical_ames.stan")
+cat("Attempting to use Stan file path:", stan_file_path, "\n")
+cat("Does the Stan file exist at that path?", file.exists(stan_file_path), "\n")
+
+
+# --- SUBSET TEST 
+if (file.exists(stan_file_path)) {
+    cat("\n--- Testing Bayesian Hierarchical Model on Subset ---\n")
+    n_subset <- 300
+    if (nrow(X_ames_lasso) < n_subset) {
+      warning("Dataset has fewer than 300 rows, using all rows for subset.")
+      n_subset <- nrow(X_ames_lasso)
+    }
+    subset_indices <- 1:n_subset
+    X_subset_lasso <- X_ames_lasso[subset_indices, , drop = FALSE]
+    y_subset_log <- y_vector_ames_log[subset_indices]
+    gid_subset <- gid_full[subset_indices] # Use the gid from the full factor mapping
+
+    stan_data_subset <- list(
+      N = n_subset, K = ncol(X_subset_lasso), X = X_subset_lasso,
+      y = y_subset_log, G = G_full, gid = gid_subset
+    )
+
+    cat("Running Stan model on subset (N=", n_subset, ")...\n")
+    # Use tryCatch to capture potential errors during Stan run
+    fit_bayes_subset <- tryCatch({
+        stan(
+            file = stan_file_path, # <-- Use path from here()
+            data = stan_data_subset, iter = 500, warmup = 250, chains = 2,
+            seed = 447, cores = getOption("mc.cores", 1L)
+        )
+    }, error = function(e) {
+        cat("ERROR during Stan subset run:", conditionMessage(e), "\n")
+        return(NULL) # Return NULL if there's an error
+    })
+
+    if(!is.null(fit_bayes_subset)){
+        cat("Stan model fitting on subset complete.\n")
+        print(summary(fit_bayes_subset, pars = c("mu_alpha", "sigma_alpha", "sigma", "lp__"))$summary)
+    } else {
+        cat("Stan subset run failed.\n")
+    }
+
+} else {
+  cat("ERROR: hierarchical_ames.stan not found at:", stan_file_path, "\nCannot run subset test.\n")
+  fit_bayes_subset <- NULL
+}
+
+
+
+
+cat("\n--- Preparing Data for Bayesian Model ---\n")
+if (!exists("predictors_ames_cleaned") || !"Neighborhood" %in% colnames(predictors_ames_cleaned)) {
+   stop("Need 'predictors_ames_cleaned' with 'Neighborhood' column from the full dataset.")
+}
+full_neighborhood_factor <- factor(predictors_ames_cleaned$Neighborhood)
+gid_full <- as.integer(full_neighborhood_factor)
+G_full <- length(levels(full_neighborhood_factor))
+cat("Number of unique neighborhoods (G) in full dataset:", G_full, "\n")
+cat("Successfully prepared Gid and G.\n")
+
+
+
+cat("\n--- Bayesian Model - Diagnostics & Subset Test ---\n")
+
+
+# --- DIAGNOSTICS ---
+cat("Current R Working Directory:", getwd(), "\n")
+cat("Project Root according to here():", here::here(), "\n")
+cat("Files in Project Root:", paste(list.files(here::here()), collapse="\n  "), "\n")
+cat("Files in Current Working Directory:", paste(list.files(getwd()), collapse="\n  "), "\n")
+
+#file path 
+stan_file_path <- here::here("hierarchical_ames.stan")
+cat("Attempting to use Stan file path:", stan_file_path, "\n")
+cat("Does the Stan file exist at that path?", file.exists(stan_file_path), "\n")
+
+
+# --- SUBSET TEST 
+if (file.exists(stan_file_path)) {
+    cat("\n--- Testing Bayesian Hierarchical Model on Subset ---\n")
+    n_subset <- 300
+    if (nrow(X_ames_lasso) < n_subset) {
+      warning("Dataset has fewer than 300 rows, using all rows for subset.")
+      n_subset <- nrow(X_ames_lasso)
+    }
+    subset_indices <- 1:n_subset
+    X_subset_lasso <- X_ames_lasso[subset_indices, , drop = FALSE]
+    y_subset_log <- y_vector_ames_log[subset_indices]
+    gid_subset <- gid_full[subset_indices] # Use the gid from the full factor mapping
+
+    stan_data_subset <- list(
+      N = n_subset, K = ncol(X_subset_lasso), X = X_subset_lasso,
+      y = y_subset_log, G = G_full, gid = gid_subset
+    )
+
+    cat("Running Stan model on subset (N=", n_subset, ")...\n")
+    # Use tryCatch to capture potential errors during Stan run
+    fit_bayes_subset <- tryCatch({
+        stan(
+            file = stan_file_path, # <-- Use path from here()
+            data = stan_data_subset, iter = 500, warmup = 250, chains = 2,
+            seed = 447, cores = getOption("mc.cores", 1L)
+        )
+    }, error = function(e) {
+        cat("ERROR during Stan subset run:", conditionMessage(e), "\n")
+        return(NULL) # Return NULL if there's an error
+    })
+
+    if(!is.null(fit_bayes_subset)){
+        cat("Stan model fitting on subset complete.\n")
+        print(summary(fit_bayes_subset, pars = c("mu_alpha", "sigma_alpha", "sigma", "lp__"))$summary)
+    } else {
+        cat("Stan subset run failed.\n")
+    }
+
+} else {
+  cat("ERROR: hierarchical_ames.stan not found at:", stan_file_path, "\nCannot run subset test.\n")
+  fit_bayes_subset <- NULL
+}
 
 
 ```
 
 
-```{r}
 
 
-```
 
 
-```{r}
 
 
-```
 
-
-```{r}
-
-
-```
 
 
 
