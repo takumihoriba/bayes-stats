@@ -1,0 +1,44 @@
+// hierarchical_ames.stan
+data {
+  int<lower=1> N;                  // Number of observations
+  int<lower=1> K;                  // Number of predictors (LASSO selected)
+  matrix[N, K] X;                  // Design matrix (LASSO features)
+  vector[N] y;                     // Outcome variable (log SalePrice)
+  int<lower=1> G;                  // Number of neighborhoods
+  int<lower=1, upper=G> gid[N];    // Neighborhood ID for each obs
+}
+
+parameters {
+  vector[K] beta;                
+  real mu_alpha;                
+  real<lower=0> sigma;           
+  real<lower=0> sigma_alpha;     
+  vector[G] alpha_raw;           
+}
+
+transformed parameters {
+  // Centered intercepts (derived from raw deviations + mean)
+  vector[G] alpha = mu_alpha + alpha_raw * sigma_alpha;
+}
+
+model {
+  // Priors (Non-centered parameterization for alpha)
+  beta ~ normal(0, 5);          
+  mu_alpha ~ normal(12, 2);   
+  sigma ~ exponential(1);      
+  sigma_alpha ~ exponential(1);
+  alpha_raw ~ std_normal();      
+
+  // Likelihood
+  y ~ normal(alpha[gid] + X * beta, sigma);
+}
+
+generated quantities {
+  vector[N] y_rep; 
+  vector[N] log_lik; 
+  for (n in 1:N) {
+    real mu_n = alpha[gid[n]] + X[n] * beta;
+    y_rep[n] = normal_rng(mu_n, sigma);
+    log_lik[n] = normal_lpdf(y[n] | mu_n, sigma);
+  }
+}
